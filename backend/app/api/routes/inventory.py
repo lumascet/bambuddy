@@ -134,6 +134,29 @@ _CSV_UPLOAD_CHUNK_BYTES = 64 * 1024
 FILAMENT_COLORS_API = "https://filamentcolors.xyz/api"
 
 
+# Spool fields that change what a reused-tag spool's slot should show.
+_REUSED_TAG_SLOT_FIELDS = {
+    "reused_tag",
+    "material",
+    "subtype",
+    "brand",
+    "rgba",
+    "slicer_filament",
+    "slicer_filament_name",
+}
+
+
+async def _sync_reused_tag_slots(db: AsyncSession, spool_id: int) -> None:
+    """Send a reused-tag spool's own filament to the slots it is assigned to
+    (services.reused_tag_slot). Never fails the request that triggered it."""
+    from backend.app.services.reused_tag_slot import sync_spool_slots
+
+    try:
+        await sync_spool_slots(db, spool_id)
+    except Exception:
+        logger.exception("Reused tag: updating the slots of spool %d failed", spool_id)
+
+
 async def apply_spool_to_slot_via_mqtt(
     *,
     db: AsyncSession,
@@ -1719,6 +1742,10 @@ async def update_spool(
         spool.reused_tag = False
 
     await db.commit()
+    if spool.reused_tag and _REUSED_TAG_SLOT_FIELDS & update_data.keys():
+        # Newly marked reused, or its filament changed: its slots still show
+        # the tag's (or the old) filament.
+        await _sync_reused_tag_slots(db, spool_id)
     result = await db.execute(select(Spool).options(*spool_response_loads()).where(Spool.id == spool_id))
     await ws_manager.broadcast({"type": "inventory_changed"})
     return result.scalar_one()
@@ -2864,6 +2891,8 @@ async def link_tag_to_spool(
         spool.reused_tag = data.reused_tag
 
     await db.commit()
+    if spool.reused_tag:
+        await _sync_reused_tag_slots(db, spool_id)
     result = await db.execute(select(Spool).options(*spool_response_loads()).where(Spool.id == spool_id))
     return result.scalar_one()
 
@@ -3672,6 +3701,9 @@ async def create_spool_from_slot(
             tray_info_idx=tray.get("tray_info_idx", ""),
         )
         await db.commit()
+        if spool.reused_tag:
+            # The slot shows the tag's filament: send the spool's own.
+            await _sync_reused_tag_slots(db, spool.id)
     await ws_manager.broadcast({"type": "inventory_changed"})
     await ws_manager.broadcast(
         {

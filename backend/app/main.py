@@ -106,7 +106,13 @@ from backend.app.core.database import async_session, engine, init_db
 from backend.app.core.static_assets import AssetStaticFiles
 from backend.app.core.tasks import spawn_background_task
 from backend.app.core.websocket import ws_manager
-from backend.app.services import kprofile_drift, pause_eta, print_dispatch_context, slot_unlink_grace
+from backend.app.services import (
+    kprofile_drift,
+    pause_eta,
+    print_dispatch_context,
+    reused_tag_slot,
+    slot_unlink_grace,
+)
 from backend.app.services.ams_assignment_lock import get_ams_assignment_lock
 from backend.app.services.archive import ArchiveService, peek_plate_index_in_3mf, swap_plate_suffix
 from backend.app.services.archive_cost_estimate import (
@@ -3289,6 +3295,26 @@ async def _recheck_held_unlinks(printer_id: int) -> None:
 slot_unlink_grace.set_recheck(_recheck_held_unlinks)
 
 
+async def _sync_reused_tag_slot(db, printer_id: int, ams_id: int, tray_id: int, tray: dict, spool, printing_now: bool):
+    """Send a reused-tag spool's own filament to its slot when the slot shows
+    the tag's (see services.reused_tag_slot). Never fails the AMS callback."""
+    if spool is None or not spool.reused_tag:
+        reused_tag_slot.forget_slot(printer_id, ams_id, tray_id)
+        return
+    # The printer refuses ams_filament_setting for the slot feeding a print
+    # (#3434); the next AMS change after the print sends it.
+    if printing_now and _slot_feeds_print(printer_id, ams_id, tray_id):
+        return
+    try:
+        await reused_tag_slot.sync_reused_tag_slot(
+            db, printer_id=printer_id, ams_id=ams_id, tray_id=tray_id, tray=tray, spool=spool
+        )
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Reused tag: sending spool %s to printer %d AMS%d-T%d failed", spool.id, printer_id, ams_id, tray_id
+        )
+
+
 async def on_ams_change(printer_id: int, ams_data: list):
     """Handle AMS data changes - sync to Spoolman if enabled and auto mode."""
     logger = logging.getLogger(__name__)
@@ -3392,6 +3418,7 @@ async def on_ams_change(printer_id: int, ams_data: list):
                             # Slot reported empty — drop any cached unknown-tag
                             # broadcast so reinserting the same spool re-prompts.
                             _clear_unknown_tag_dedup(printer_id, ams_id, tray_id)
+                            reused_tag_slot.forget_slot(printer_id, ams_id, tray_id)
                             continue  # Empty slot
                         # Check if assignment already exists for this slot
                         existing = await db.execute(
@@ -3401,6 +3428,11 @@ async def on_ams_change(printer_id: int, ams_data: list):
                         )
                         existing_assignment = existing.scalar_one_or_none()
                         if existing_assignment:
+                            # A tag read puts the tag's filament back into a
+                            # reused-tag spool's slot; send the spool's own again.
+                            await _sync_reused_tag_slot(
+                                db, printer_id, ams_id, tray_id, tray, existing_assignment.spool, printing_now
+                            )
                             # Sync spool weight_used from AMS remain — only INCREASE, never decrease.
                             # The AMS remain% is low-resolution (integer %, i.e. 10g steps for 1kg spool)
                             # and must not overwrite precise values from the usage tracker (3MF/G-code).
@@ -3544,6 +3576,9 @@ async def on_ams_change(printer_id: int, ams_data: list):
                                 tray_info_idx=tray_info_idx,
                             )
                             await db.commit()
+                            # The slot shows the tag's filament; a reused tag's
+                            # spool is something else, so send its own.
+                            await _sync_reused_tag_slot(db, printer_id, ams_id, tray_id, tray, spool, printing_now)
                             if known_by_tag:
                                 rfid_assigned.append((spool.id, (printer_id, ams_id, tray_id)))
                             await ws_manager.broadcast(

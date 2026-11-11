@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.models.spool import Spool
 from backend.app.models.spool_assignment import SpoolAssignment
+from backend.app.services import reused_tag_slot
 from backend.app.services.usage_tracker import _active_sessions
 
 TAG_UID = "A1B2C3D4E5F60718"
@@ -40,8 +41,10 @@ TAG_TRAY = {
 @pytest.fixture(autouse=True)
 def _no_sessions():
     _active_sessions.clear()
+    reused_tag_slot.reset()
     yield
     _active_sessions.clear()
+    reused_tag_slot.reset()
 
 
 async def _reused_tag_spool(db_session, *, reused: bool = True) -> Spool:
@@ -61,28 +64,34 @@ async def _reused_tag_spool(db_session, *, reused: bool = True) -> Spool:
     return spool
 
 
-async def _push(test_engine, printer_id: int, ams_data: list) -> list[dict]:
-    """Feed one AMS push through on_ams_change; returns what was broadcast."""
+async def _push(
+    test_engine, printer_id: int, ams_data: list, *, client: MagicMock | None = None, state: str = "IDLE"
+) -> list[dict]:
+    """Feed one AMS push through on_ams_change; returns what was broadcast.
+    Pass ``client`` to see the MQTT commands sent to the printer."""
     from backend.app.main import _unknown_tag_last_broadcast, on_ams_change
 
     _unknown_tag_last_broadcast.clear()
 
     status = MagicMock()
     status.raw_data = {"ams": {"ams": ams_data}}
-    status.state = "IDLE"
+    status.state = state
     status.connected = True
+    status.kprofiles = []
 
     real_db = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
     with (
         patch("backend.app.main.async_session", real_db),
         patch("backend.app.core.database.async_session", real_db),
         patch("backend.app.main.printer_manager") as mock_pm,
+        # The slot override reaches the printer through the shared assign path.
+        patch("backend.app.services.printer_manager.printer_manager", mock_pm),
         patch("backend.app.main.mqtt_relay") as mock_relay,
         patch("backend.app.main.ws_manager") as mock_ws,
     ):
         mock_pm.get_printer.return_value = MagicMock(name="X1C", serial_number="REUSEDTAG")
         mock_pm.get_status.return_value = status
-        mock_pm.get_client.return_value = MagicMock()
+        mock_pm.get_client.return_value = client or MagicMock()
         mock_pm.get_model.return_value = "X1C"
         mock_relay.on_ams_change = AsyncMock()
         mock_ws.send_printer_status = AsyncMock()
@@ -306,11 +315,13 @@ async def test_an_archived_spools_tag_otherwise_stays_quiet(
 # --- Answering the prompt -----------------------------------------------------
 
 
-async def _from_slot(async_client: AsyncClient, printer_id: int, body: dict):
-    state = SimpleNamespace(state="IDLE", connected=True, raw_data={"ams": [{"id": 0, "tray": [dict(TAG_TRAY)]}]})
+async def _from_slot(async_client: AsyncClient, printer_id: int, body: dict, client: MagicMock | None = None):
+    state = SimpleNamespace(
+        state="IDLE", connected=True, kprofiles=[], raw_data={"ams": [{"id": 0, "tray": [dict(TAG_TRAY)]}]}
+    )
     with patch("backend.app.services.printer_manager.printer_manager") as pm:
         pm.get_status = MagicMock(return_value=state)
-        pm.get_client = MagicMock(return_value=MagicMock())
+        pm.get_client = MagicMock(return_value=client or MagicMock())
         pm.get_model = MagicMock(return_value="X1C")
         return await async_client.post(
             "/api/v1/inventory/spools/from-slot",
@@ -383,3 +394,140 @@ async def test_a_reused_answer_needs_a_material(async_client: AsyncClient, print
     resp = await _from_slot(async_client, printer_id, {"reused_tag": True})
 
     assert resp.status_code == 400
+
+
+# --- The slot shows the spool's own filament ---------------------------------
+#
+# Every tag read puts the tag's filament (PLA red) into the slot; for a reused
+# tag the spool's own (PETG black) is sent back to the printer.
+
+# The slot after the override took: the spool's filament, the tag still read.
+SPOOL_TRAY = dict(TAG_TRAY, tray_type="PETG", tray_color="000000FF", tray_info_idx="GFG99", tray_sub_brands="PETG")
+
+
+def _slot_settings(client: MagicMock) -> list[tuple[str, str]]:
+    """(tray_type, tray_color) of every ams_filament_setting sent."""
+    return [(c.kwargs["tray_type"], c.kwargs["tray_color"]) for c in client.ams_set_filament_setting.call_args_list]
+
+
+async def _assigned_reused_spool(db_session, printer_id: int, *, reused: bool = True) -> int:
+    spool = await _reused_tag_spool(db_session, reused=reused)
+    db_session.add(
+        SpoolAssignment(
+            spool_id=spool.id,
+            printer_id=printer_id,
+            ams_id=0,
+            tray_id=0,
+            fingerprint_color="FF0000FF",
+            fingerprint_type="PLA",
+        )
+    )
+    await db_session.commit()
+    return spool.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_the_tag_read_is_overridden_with_the_spools_filament(test_engine, db_session, printer_factory):
+    printer_id = (await printer_factory(name="X1C")).id
+    await _reused_tag_spool(db_session)
+    client = MagicMock()
+
+    await _push(test_engine, printer_id, [{"id": 0, "tray": [dict(TAG_TRAY)]}], client=client)
+
+    assert _slot_settings(client) == [("PETG", "000000FF")]
+    # Not the tag's PLA Basic preset: the generic one for the spool's material.
+    assert client.ams_set_filament_setting.call_args.kwargs["tray_info_idx"] != "GFA00"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_slot_already_showing_the_spool_is_left_alone(test_engine, db_session, printer_factory):
+    printer_id = (await printer_factory(name="X1C")).id
+    spool_id = await _assigned_reused_spool(db_session, printer_id)
+    client = MagicMock()
+
+    await _push(test_engine, printer_id, [{"id": 0, "tray": [dict(SPOOL_TRAY)]}], client=client)
+
+    assert _slot_settings(client) == []
+    # The override's PETG/black does not unlink the spool either.
+    db_session.expire_all()
+    assignment = await db_session.scalar(select(SpoolAssignment).where(SpoolAssignment.printer_id == printer_id))
+    assert assignment is not None and assignment.spool_id == spool_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_every_new_tag_read_is_overridden_again(test_engine, db_session, printer_factory):
+    """Insert, power-on or refresh: the tag's filament is back, and so is the send."""
+    printer_id = (await printer_factory(name="X1C")).id
+    await _assigned_reused_spool(db_session, printer_id)
+    client = MagicMock()
+
+    for tray in (TAG_TRAY, SPOOL_TRAY, TAG_TRAY, SPOOL_TRAY):
+        await _push(test_engine, printer_id, [{"id": 0, "tray": [dict(tray)]}], client=client)
+
+    assert _slot_settings(client) == [("PETG", "000000FF"), ("PETG", "000000FF")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_an_authentic_tags_slot_is_never_overridden(test_engine, db_session, printer_factory):
+    printer_id = (await printer_factory(name="X1C")).id
+    await _assigned_reused_spool(db_session, printer_id, reused=False)
+    client = MagicMock()
+
+    await _push(test_engine, printer_id, [{"id": 0, "tray": [dict(TAG_TRAY)]}], client=client)
+
+    assert _slot_settings(client) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_the_slot_feeding_a_print_is_not_overridden(test_engine, db_session, printer_factory):
+    """The printer refuses the setting for it; it goes after the print."""
+    printer_id = (await printer_factory(name="X1C")).id
+    await _assigned_reused_spool(db_session, printer_id)
+    client = MagicMock()
+
+    with patch("backend.app.main._slot_feeds_print", return_value=True):
+        await _push(test_engine, printer_id, [{"id": 0, "tray": [dict(TAG_TRAY)]}], client=client, state="RUNNING")
+
+    assert _slot_settings(client) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_answering_reused_overrides_the_slot_at_once(async_client: AsyncClient, printer_factory):
+    """No AMS push follows the answer, so the endpoint sends it itself."""
+    printer_id = (await printer_factory()).id
+    client = MagicMock()
+
+    resp = await _from_slot(
+        async_client, printer_id, {"reused_tag": True, "material": "PETG", "rgba": "000000FF"}, client=client
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert _slot_settings(client) == [("PETG", "000000FF")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_marking_an_assigned_spool_reused_overrides_its_slot(
+    async_client: AsyncClient, db_session, printer_factory
+):
+    printer_id = (await printer_factory()).id
+    spool_id = await _assigned_reused_spool(db_session, printer_id, reused=False)
+    client = MagicMock()
+    state = SimpleNamespace(
+        state="IDLE", connected=True, kprofiles=[], raw_data={"ams": [{"id": 0, "tray": [dict(TAG_TRAY)]}]}
+    )
+
+    with patch("backend.app.services.printer_manager.printer_manager") as pm:
+        pm.get_status = MagicMock(return_value=state)
+        pm.get_client = MagicMock(return_value=client)
+        pm.get_model = MagicMock(return_value="X1C")
+        resp = await async_client.patch(f"/api/v1/inventory/spools/{spool_id}", json={"reused_tag": True})
+
+    assert resp.status_code == 200, resp.text
+    assert _slot_settings(client) == [("PETG", "000000FF")]
