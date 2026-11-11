@@ -102,10 +102,10 @@ def normalize_bool_setting(key: str, value: object) -> str:
         if not candidate:
             # Empty is stored verbatim rather than normalised to "false".
             # get_spoolman_settings reads these with ``or "<default>"``, so an
-            # empty stored value means "use the default" — and two of them
-            # (spoolman_report_partial_usage, auto_add_unknown_rfid) default to
-            # ON. Rewriting "" to "false" would silently switch them off for any
-            # client that submits a blank value.
+            # empty stored value means "use the default" — and one of them
+            # (spoolman_report_partial_usage) defaults to ON. Rewriting "" to
+            # "false" would silently switch it off for any client that submits
+            # a blank value.
             return ""
         if candidate in _TRUTHY_SETTING_VALUES:
             return "true"
@@ -796,7 +796,7 @@ async def get_spoolman_settings(
     spoolman_sync_mode = await get_setting(db, "spoolman_sync_mode") or "auto"
     spoolman_disable_weight_sync = await get_setting(db, "spoolman_disable_weight_sync") or "false"
     spoolman_report_partial_usage = await get_setting(db, "spoolman_report_partial_usage") or "true"
-    auto_add_unknown_rfid = await get_setting(db, "auto_add_unknown_rfid") or "true"
+    auto_add_unknown_rfid = await get_setting(db, "auto_add_unknown_rfid") or "false"
 
     return {
         "spoolman_enabled": spoolman_enabled,

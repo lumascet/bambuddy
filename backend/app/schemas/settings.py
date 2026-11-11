@@ -95,8 +95,8 @@ class AppSettings(BaseModel):
         description="Report Partial Usage for Failed Prints. When a print fails or is cancelled, report the estimated filament used up to that point based on layer progress.",
     )
     auto_add_unknown_rfid: bool = Field(
-        default=True,
-        description="Automatically add spools with unknown RFID tags to inventory. Disable if you pre-create inventory entries manually to avoid duplicates.",
+        default=False,
+        description="Automatically add spools with unknown RFID tags to inventory. Off by default: an unknown tag raises a prompt that asks whether the spool is an authentic Bambu Lab spool or carries a reused tag.",
     )
     disable_filament_warnings: bool = Field(
         default=False,

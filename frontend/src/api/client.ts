@@ -1497,7 +1497,7 @@ export interface AppSettings {
   disable_filament_warnings: boolean;  // Disable filament warnings (print insufficiency and assignment mismatch)
   prefer_lowest_filament: boolean;  // When multiple spools match, prefer lowest remaining filament
   spoolman_enabled: boolean;  // True when the user has switched filament tracking to Spoolman; backend includes this in the /settings/ response even though earlier consumers read it from the dedicated /settings/spoolman endpoint as a string
-  auto_add_unknown_rfid: boolean;  // When false, the backend skips auto-creating inventory spools for unknown RFID tags and instead broadcasts an unknown_tag event for the confirmation modal
+  auto_add_unknown_rfid: boolean;  // Off by default. When false, the backend skips auto-creating inventory spools for unknown RFID tags and instead broadcasts an unknown_tag event: the prompt asks whether the spool is authentic or carries a reused tag
   spoolman_url: string;
   // Default printer
   default_printer_id: number | null;
@@ -4044,6 +4044,10 @@ export interface InventorySpool {
   tray_uuid: string | null;
   data_origin: string | null;
   tag_type: string | null;
+  // The linked tag came off another spool (an old Bambu Lab tag reused on
+  // other filament): the filament data the tag reports is ignored. Absent in
+  // Spoolman mode.
+  reused_tag?: boolean;
   archived_at: string | null;
   created_at: string;
   updated_at: string;
@@ -4065,6 +4069,23 @@ export interface InventorySpool {
   // Supplier assignments (#2988). Absent in Spoolman mode — Spoolman's
   // vendor is the manufacturer, not the seller, so there is no mapping.
   suppliers?: SpoolSupplierLink[];
+}
+
+// Answer to the unknown-tag prompt. Without reused_tag (or false) the spool
+// is added from the tag's own data, as an authentic Bambu Lab spool. With
+// reused_tag the tag was reused on other filament, described by the rest.
+export interface SpoolFromSlotRequest {
+  printer_id: number;
+  ams_id: number;
+  tray_id: number;
+  reused_tag?: boolean;
+  material?: string;
+  subtype?: string | null;
+  brand?: string | null;
+  color_name?: string | null;
+  rgba?: string | null;
+  label_weight?: number;
+  core_weight?: number;
 }
 
 // ── Suppliers (#2988) ──────────────────────────────────────────────────────
@@ -7192,7 +7213,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
-  createSpoolFromSlot: (data: { printer_id: number; ams_id: number; tray_id: number }) =>
+  createSpoolFromSlot: (data: SpoolFromSlotRequest) =>
     request<InventorySpool>(`/inventory/spools/from-slot`, {
       method: 'POST',
       body: JSON.stringify(data),
@@ -7448,7 +7469,7 @@ export const api = {
     request<{ status: string }>('/inventory/colors/reset', { method: 'POST' }),
   searchColors: (manufacturer?: string, material?: string) =>
     request<ColorCatalogEntry[]>(`/inventory/colors/search?${manufacturer ? `manufacturer=${encodeURIComponent(manufacturer)}` : ''}${manufacturer && material ? '&' : ''}${material ? `material=${encodeURIComponent(material)}` : ''}`),
-  linkTagToSpool: (spoolId: number, data: { tag_uid?: string; tray_uuid?: string; tag_type?: string; data_origin?: string }) =>
+  linkTagToSpool: (spoolId: number, data: { tag_uid?: string; tray_uuid?: string; tag_type?: string; data_origin?: string; reused_tag?: boolean }) =>
     request<InventorySpool>(`/inventory/spools/${spoolId}/link-tag`, {
       method: 'PATCH',
       body: JSON.stringify(data),

@@ -882,3 +882,70 @@ describe('FilamentHoverCard — assigned spool swatch (#2967)', () => {
     expect(header().style.backgroundImage).toBe('');
   });
 });
+
+describe('FilamentHoverCard — RFID tag and reused tag', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+
+  const assignedSpool = { id: 4, material: 'PETG', subtype: null, brand: 'Sunlu', color_name: 'Black' };
+
+  it('shows the tag the AMS read when Spoolman is off', async () => {
+    renderWithHover(
+      <FilamentHoverCard data={baseFilamentData} inventory={{ assignedSpool: null }}>
+        <div>trigger</div>
+      </FilamentHoverCard>
+    );
+    vi.advanceTimersByTime(100);
+
+    await waitFor(() => expect(screen.getByText('RFID tag')).toBeInTheDocument());
+    expect(screen.getByText('A1B2C3D4E5F6…')).toBeInTheDocument();
+  });
+
+  it('falls back to the tag UID for a tag without a Bambu UUID', async () => {
+    renderWithHover(
+      <FilamentHoverCard data={{ ...baseFilamentData, trayUuid: null, tagUid: '04A1B2C3' }}>
+        <div>trigger</div>
+      </FilamentHoverCard>
+    );
+    vi.advanceTimersByTime(100);
+
+    await waitFor(() => expect(screen.getByText('04A1B2C3')).toBeInTheDocument());
+  });
+
+  it('leaves the tag to the Spoolman section when Spoolman is on', async () => {
+    renderWithHover(
+      <FilamentHoverCard data={baseFilamentData} spoolman={{ enabled: true }}>
+        <div>trigger</div>
+      </FilamentHoverCard>
+    );
+    vi.advanceTimersByTime(100);
+
+    await waitFor(() => expect(screen.getByText('A1B2C3D4...')).toBeInTheDocument());
+    expect(screen.queryByText('RFID tag')).not.toBeInTheDocument();
+  });
+
+  it('marks a slot whose spool carries a reused tag', async () => {
+    renderWithHover(
+      <FilamentHoverCard data={baseFilamentData} inventory={{ assignedSpool: { ...assignedSpool, reusedTag: true } }}>
+        <div>trigger</div>
+      </FilamentHoverCard>
+    );
+    vi.advanceTimersByTime(100);
+
+    await waitFor(() => expect(screen.getByText('Reused')).toBeInTheDocument());
+    expect(screen.getByText('BBL')).toBeInTheDocument();
+  });
+
+  it('does not mark an ordinary tagged spool', async () => {
+    renderWithHover(
+      <FilamentHoverCard data={baseFilamentData} inventory={{ assignedSpool }}>
+        <div>trigger</div>
+      </FilamentHoverCard>
+    );
+    vi.advanceTimersByTime(100);
+
+    await waitFor(() => expect(screen.getByText('BBL')).toBeInTheDocument());
+    expect(screen.queryByText('Reused')).not.toBeInTheDocument();
+  });
+});

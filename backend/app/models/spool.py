@@ -87,6 +87,11 @@ class Spool(Base):
     tray_uuid: Mapped[str | None] = mapped_column(String(32))  # Bambu Lab spool UUID (32 hex chars)
     data_origin: Mapped[str | None] = mapped_column(String(20))  # How data was populated: manual, rfid_auto, nfc_link
     tag_type: Mapped[str | None] = mapped_column(String(20))  # Tag vendor: bambulab, generic, etc.
+    # The linked tag came off another spool (an old Bambu Lab tag reused on
+    # third-party filament): the filament the tag reports -- material, colour,
+    # remain% -- is not this spool's. The tag only identifies the spool; the
+    # spool record is the truth, and the AMS remain% is not synced into it.
+    reused_tag: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     archived_at: Mapped[datetime | None] = mapped_column(DateTime)  # NULL = active
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

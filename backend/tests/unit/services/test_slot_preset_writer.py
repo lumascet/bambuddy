@@ -199,3 +199,47 @@ async def test_spoolman_helper_skips_when_tray_info_idx_unknown(db_session, prin
     )
     result = await db_session.execute(select(SlotPresetMapping).where(SlotPresetMapping.printer_id == printer.id))
     assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "slicer_filament, slicer_filament_name, expected",
+    [
+        (None, None, None),  # Nothing of its own: no row from the tag's preset.
+        ("GFG99", "Generic PETG", ("GFSG99", "Generic PETG")),  # Its own preset still wins.
+    ],
+)
+async def test_internal_helper_ignores_a_reused_tags_tray_preset(
+    db_session, printer_factory, slicer_filament, slicer_filament_name, expected
+):
+    """A reused tag's tray_info_idx and sub-brand name the spool it came off."""
+    from backend.app.models.spool import Spool
+    from backend.app.services.slot_preset_writer import upsert_slot_preset_for_spool
+
+    printer = await printer_factory()
+    spool = Spool(
+        material="PETG",
+        brand="Sunlu",
+        label_weight=1000,
+        reused_tag=True,
+        slicer_filament=slicer_filament,
+        slicer_filament_name=slicer_filament_name,
+    )
+    db_session.add(spool)
+    await db_session.flush()
+
+    await upsert_slot_preset_for_spool(
+        db=db_session,
+        spool=spool,
+        printer_id=printer.id,
+        ams_id=0,
+        tray_id=0,
+        tray_info_idx="GFA00",
+        tray_sub_brands="PLA Basic",
+        tray_type="PLA",
+    )
+
+    row = (
+        await db_session.execute(select(SlotPresetMapping).where(SlotPresetMapping.printer_id == printer.id))
+    ).scalar_one_or_none()
+    assert (None if row is None else (row.preset_id, row.preset_name)) == expected

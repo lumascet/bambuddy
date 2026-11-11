@@ -107,6 +107,14 @@ async def upsert_slot_preset_for_spool(
     cloud-form ids (GFS… / GFA… via ``filament_id_to_setting_id`` on the
     tray's ``tray_info_idx``) → standard setting_id form.
     """
+    if getattr(spool, "reused_tag", False) is True:
+        # A reused tag's tray data (tray_info_idx, sub-brand, type) names the
+        # spool the tag came off. The preset id comes from this spool's own
+        # preset; without one there is none, and no row is written.
+        tray_info_idx = spool.slicer_filament or ""
+        setting_id = ""
+        tray_sub_brands = " ".join(p for p in (spool.material, spool.subtype) if p)
+        tray_type = spool.material or ""
     preset_name = spool.slicer_filament_name or tray_sub_brands or tray_type
     preset_source = "cloud"
     sf = spool.slicer_filament or ""

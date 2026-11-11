@@ -253,6 +253,41 @@ describe('useWebSocket hook', () => {
   });
 
   describe('message handling', () => {
+    it('passes the unknown-tag prompt everything it needs, refill details included', async () => {
+      // The handler copies fields one by one; a field it leaves out never
+      // reaches the prompt (reason/remain/archived_spool once did not).
+      const received: unknown[] = [];
+      const listener = (e: Event) => received.push((e as CustomEvent).detail);
+      window.addEventListener('unknown-tag', listener);
+      try {
+        const { useWebSocket } = await import('../../hooks/useWebSocket');
+        renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+        const ws = await waitForWs();
+        act(() => {
+          ws.open();
+        });
+        const archived_spool = { id: 3, material: 'PLA', remaining_pct: 2 };
+        act(() => {
+          ws.simulateMessage({
+            type: 'unknown_tag',
+            printer_id: 1,
+            ams_id: 0,
+            tray_id: 3,
+            tray_type: 'PLA',
+            remain: 95,
+            reason: 'refilled_archived',
+            archived_spool,
+          });
+        });
+
+        expect(received).toEqual([
+          expect.objectContaining({ tray_id: 3, remain: 95, reason: 'refilled_archived', archived_spool }),
+        ]);
+      } finally {
+        window.removeEventListener('unknown-tag', listener);
+      }
+    });
+
     it('updates printer status in query cache on printer_status message', async () => {
       // Test the printer status update logic directly using setQueryData
       // The WebSocket handler with throttling is complex to test with fake timers,

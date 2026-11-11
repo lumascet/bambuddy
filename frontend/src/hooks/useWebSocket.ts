@@ -4,6 +4,7 @@ import { useToast } from '../contexts/ToastContext';
 import { useTranslation } from 'react-i18next';
 import { api, ApiError } from '../api/client';
 import { inventoryLocationsQueryKey, inventorySuppliersQueryKey } from '../utils/inventoryQueries';
+import type { UnknownTagDetail } from './useUnknownTagPrompt';
 
 // The auth-failure close code of /api/v1/ws (websocket.py
 // _WS_CLOSE_UNAUTHORIZED). It reaches the browser only for a socket the server
@@ -560,17 +561,7 @@ export function useWebSocket() {
         // ships the slot's current tray data alongside the event so
         // consumers don't have to look it up from the (frequently stale)
         // cached printerStatus query.
-        const m = message as unknown as {
-          printer_id?: number;
-          ams_id?: number;
-          tray_id?: number;
-          tag_uid?: string;
-          tray_uuid?: string;
-          tray_type?: string | null;
-          tray_color?: string | null;
-          tray_sub_brands?: string | null;
-          tray_count?: number | null;
-        };
+        const m = message as unknown as UnknownTagDetail;
         window.dispatchEvent(new CustomEvent('unknown-tag', {
           detail: {
             printer_id: m.printer_id,
@@ -582,7 +573,12 @@ export function useWebSocket() {
             tray_color: m.tray_color,
             tray_sub_brands: m.tray_sub_brands,
             tray_count: m.tray_count,
-          }
+            // Why the prompt is raised (new tag, or an archived spool's tag
+            // back on a refilled spool), and what it needs to say so.
+            remain: m.remain,
+            reason: m.reason,
+            archived_spool: m.archived_spool,
+          } satisfies UnknownTagDetail,
         }));
         break;
       }

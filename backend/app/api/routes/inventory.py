@@ -1713,6 +1713,10 @@ async def update_spool(
 
     for field, value in update_data.items():
         setattr(spool, field, value)
+    # "Reused tag" describes the linked tag; with no tag left it means nothing,
+    # and must not carry over to whatever tag is linked next.
+    if not spool.tag_uid and not spool.tray_uuid:
+        spool.reused_tag = False
 
     await db.commit()
     result = await db.execute(select(Spool).options(*spool_response_loads()).where(Spool.id == spool_id))
@@ -2744,6 +2748,8 @@ class LinkTagRequest(BaseModel):
     tray_uuid: str | None = None
     tag_type: str | None = None
     data_origin: str | None = "nfc_link"
+    # The tag came off another spool; its filament data is to be ignored.
+    reused_tag: bool | None = None
 
 
 def _validate_tag_input(
@@ -2854,6 +2860,8 @@ async def link_tag_to_spool(
         spool.tag_type = data.tag_type
     if data.data_origin is not None:
         spool.data_origin = data.data_origin
+    if data.reused_tag is not None:
+        spool.reused_tag = data.reused_tag
 
     await db.commit()
     result = await db.execute(select(Spool).options(*spool_response_loads()).where(Spool.id == spool_id))
@@ -3149,6 +3157,11 @@ async def sync_weights_from_ams(
         spool = assignment.spool
         if not spool:
             logger.debug("AMS weight sync: assignment %d has no spool", assignment.id)
+            skipped += 1
+            continue
+        if spool.reused_tag:
+            # The slot's remain% comes from a tag that belongs to another spool.
+            logger.debug("AMS weight sync: spool %d has a reused tag, skipping", spool.id)
             skipped += 1
             continue
 
@@ -3510,6 +3523,79 @@ class CreateSpoolFromSlotRequest(BaseModel):
     printer_id: int
     ams_id: int
     tray_id: int
+    # The answer to the unknown-tag prompt. False: an authentic Bambu Lab spool,
+    # added from the tag's data. True: the tag was reused on other filament,
+    # which the fields below describe; the tag's data is ignored.
+    reused_tag: bool = False
+    material: str | None = Field(default=None, max_length=50)
+    subtype: str | None = Field(default=None, max_length=50)
+    brand: str | None = Field(default=None, max_length=100)
+    color_name: str | None = Field(default=None, max_length=100)
+    rgba: str | None = Field(default=None, pattern=r"^[0-9A-Fa-f]{8}$")
+    label_weight: int | None = Field(default=None, gt=0, le=100000)
+    core_weight: int | None = Field(default=None, ge=0, le=10000)
+
+
+def _real_tag_value(value: str | None) -> str | None:
+    """A normalised tag id, or None for an empty or all-zero one."""
+    if not value or set(value) == {"0"}:
+        return None
+    return value
+
+
+async def _create_reused_tag_spool(db: AsyncSession, req: CreateSpoolFromSlotRequest, tray: dict) -> Spool:
+    """A new spool for a reused tag: the filament the user named, the slot's tag.
+
+    The tag's own filament data and remain% describe the spool it came off,
+    so neither is used; the new spool starts full. An archived spool still
+    carrying the tag gives it up (the used-up spool it was on); an active one
+    refuses with the shared ``tag_already_linked`` 409.
+    """
+    tag_uid = _real_tag_value(normalize_tag_uid(tray.get("tag_uid", "")))
+    tray_uuid = _real_tag_value(normalize_tray_uuid(tray.get("tray_uuid", "")))
+
+    for field, value in (("tag_uid", tag_uid), ("tray_uuid", tray_uuid)):
+        if not value:
+            continue
+        column = getattr(Spool, field)
+        holders = (await db.execute(select(Spool).where(func.upper(column) == value).order_by(Spool.id))).scalars()
+        for holder in holders.all():
+            if holder.archived_at is None:
+                raise tag_already_linked(field, holder.id)
+            setattr(holder, field, None)
+
+    spool = Spool(
+        material=req.material.strip(),
+        subtype=(req.subtype or "").strip() or None,
+        brand=(req.brand or "").strip() or None,
+        color_name=(req.color_name or "").strip() or None,
+        rgba=req.rgba.upper() if req.rgba else None,
+        label_weight=req.label_weight or 1000,
+        core_weight=req.core_weight if req.core_weight is not None else 250,
+        weight_used=0,
+        tag_uid=tag_uid,
+        tray_uuid=tray_uuid,
+        tag_type="bambulab",
+        data_origin="rfid_reused",
+        reused_tag=True,
+    )
+    # Before add(), as in create_spool_from_tray: cascade processing would
+    # otherwise lazy-load these outside the greenlet.
+    spool.k_profiles = []
+    spool.assignments = []
+    spool.supplier_links = []
+    db.add(spool)
+    await db.flush()
+    logger.info(
+        "Created spool %d for a reused tag: %s %s %s (tag=%s uuid=%s)",
+        spool.id,
+        spool.brand or "",
+        spool.material,
+        spool.color_name or "",
+        tag_uid,
+        tray_uuid,
+    )
+    return spool
 
 
 @router.post("/spools/from-slot", response_model=SpoolResponse)
@@ -3566,11 +3652,16 @@ async def create_spool_from_slot(
 
     if not is_valid_tag(tray.get("tag_uid", ""), tray.get("tray_uuid", "")):
         raise HTTPException(status_code=400, detail="Slot has no RFID tag")
+    if req.reused_tag and not (req.material or "").strip():
+        raise HTTPException(status_code=400, detail="A reused tag needs the spool's real material")
 
     # Under the slot lock from the first write: on SQLite the spool insert takes
     # the write lock, which an AMS update holding the slot lock would wait for.
     async with get_ams_assignment_lock(req.printer_id):
-        spool = await create_spool_from_tray(db, tray)
+        if req.reused_tag:
+            spool = await _create_reused_tag_spool(db, req, tray)
+        else:
+            spool = await create_spool_from_tray(db, tray)
         await auto_assign_spool(
             req.printer_id,
             req.ams_id,

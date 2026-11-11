@@ -458,6 +458,51 @@ async def tag_belongs_to_archived_spool(db: AsyncSession, tag_uid: str, tray_uui
     return found is not None
 
 
+# A tag of an archived spool coming back much fuller is that tag reused on a
+# new spool: the archived one was used up (at most EMPTY_PCT left) and the AMS
+# now reports at least REFILL_MIN_GAIN_PCT points more than it had.
+REFILL_EMPTY_PCT = 10
+REFILL_MIN_GAIN_PCT = 30
+
+
+async def archived_spool_for_tag(db: AsyncSession, tag_uid: str, tray_uuid: str) -> Spool | None:
+    """The most recently archived spool carrying this tag, if any."""
+    tray_uuid_norm = _normalize_tray_uuid(tray_uuid)
+    tag_uid_norm = _normalize_tag_uid(tag_uid)
+    conditions = []
+    if tray_uuid_norm and tray_uuid_norm != ZERO_TRAY_UUID and tray_uuid_norm != "0" * len(tray_uuid_norm):
+        conditions.append(func.upper(Spool.tray_uuid) == tray_uuid_norm)
+    if tag_uid_norm and tag_uid_norm != ZERO_TAG_UID and tag_uid_norm != "0" * len(tag_uid_norm):
+        conditions.append(func.upper(Spool.tag_uid) == tag_uid_norm)
+    if not conditions:
+        return None
+    result = await db.execute(
+        select(Spool)
+        .where(Spool.archived_at.is_not(None), or_(*conditions))
+        .order_by(Spool.archived_at.desc(), Spool.id.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+def spool_remaining_pct(spool: Spool) -> float:
+    """What is left on the spool, in percent of its label weight."""
+    label = spool.label_weight or 1000
+    return max(0.0, (label - (spool.weight_used or 0)) / label * 100)
+
+
+def looks_refilled(archived: Spool, tray_data: dict) -> bool:
+    """True when an empty archived spool's tag now reports a much fuller spool."""
+    try:
+        remain = int(tray_data.get("remain"))
+    except (TypeError, ValueError):
+        return False
+    if not 0 <= remain <= 100:
+        return False  # The AMS does not know (-1): no grounds to say.
+    was = spool_remaining_pct(archived)
+    return was <= REFILL_EMPTY_PCT and remain >= was + REFILL_MIN_GAIN_PCT
+
+
 async def get_spool_by_tag(db: AsyncSession, tag_uid: str, tray_uuid: str, sak: int | None = None) -> Spool | None:
     """Look up an active spool by RFID tag UID or Bambu Lab tray UUID.
 

@@ -21,7 +21,44 @@ export interface UnknownTagDetail {
   tray_color?: string | null;
   tray_sub_brands?: string | null;
   tray_count?: number | null;
+  // The tag's remain% when the AMS knows it.
+  remain?: number | null;
+  // 'unknown': a tag never seen before. 'refilled_archived': the tag of an
+  // empty archived spool, now reporting a much fuller spool.
+  reason?: UnknownTagReason;
+  archived_spool?: ArchivedTagSpool | null;
 }
+
+export type UnknownTagReason = 'unknown' | 'refilled_archived';
+
+// The archived spool a refilled tag last belonged to.
+export interface ArchivedTagSpool {
+  id: number;
+  material: string;
+  subtype: string | null;
+  brand: string | null;
+  color_name: string | null;
+  rgba: string | null;
+  label_weight: number | null;
+  core_weight: number | null;
+  remaining_pct: number;
+  reused_tag: boolean;
+}
+
+// What the user told the prompt: authentic (add from the tag) or the real
+// filament on a spool carrying a reused tag.
+export type UnknownSpoolAnswer =
+  | { reused: false }
+  | {
+      reused: true;
+      material: string;
+      subtype: string | null;
+      brand: string | null;
+      color_name: string | null;
+      rgba: string | null;
+      label_weight: number;
+      core_weight: number | null;
+    };
 
 export interface UnknownSpoolPrompt {
   printer_id: number;
@@ -33,6 +70,9 @@ export interface UnknownSpoolPrompt {
   material: string | null;
   color_hex: string | null;
   brand: string | null;
+  remain: number | null;
+  reason: UnknownTagReason;
+  archived_spool: ArchivedTagSpool | null;
 }
 
 function slotKey(printer_id: number, ams_id: number, tray_id: number): string {
@@ -67,6 +107,9 @@ export function useUnknownTagPrompt() {
         material: detail.tray_type ?? null,
         color_hex: detail.tray_color ?? null,
         brand: detail.tray_sub_brands ?? null,
+        remain: detail.remain ?? null,
+        reason: detail.reason ?? 'unknown',
+        archived_spool: detail.archived_spool ?? null,
       };
     },
     [queryClient, t],
@@ -97,13 +140,30 @@ export function useUnknownTagPrompt() {
 
   const current = queue[0] ?? null;
 
+  // Spoolman has no reused-tag concept: there the prompt only adds the tag's filament.
+  const reusedTagSupported = !uiSettings?.spoolman_enabled;
+
   const addMutation = useMutation({
-    mutationFn: async (prompt: UnknownSpoolPrompt) => {
+    mutationFn: async ({ prompt, answer }: { prompt: UnknownSpoolPrompt; answer: UnknownSpoolAnswer }) => {
       if (uiSettings?.spoolman_enabled) {
         await api.createSpoolmanSpoolFromSlot({
           printer_id: prompt.printer_id,
           ams_id: prompt.ams_id,
           tray_id: prompt.tray_id,
+        });
+      } else if (answer.reused) {
+        await api.createSpoolFromSlot({
+          printer_id: prompt.printer_id,
+          ams_id: prompt.ams_id,
+          tray_id: prompt.tray_id,
+          reused_tag: true,
+          material: answer.material,
+          subtype: answer.subtype,
+          brand: answer.brand,
+          color_name: answer.color_name,
+          rgba: answer.rgba,
+          label_weight: answer.label_weight,
+          core_weight: answer.core_weight ?? undefined,
         });
       } else {
         await api.createSpoolFromSlot({
@@ -127,10 +187,13 @@ export function useUnknownTagPrompt() {
     },
   });
 
-  const confirm = useCallback(() => {
-    if (!current || addMutation.isPending) return;
-    addMutation.mutate(current);
-  }, [current, addMutation]);
+  const confirm = useCallback(
+    (answer: UnknownSpoolAnswer = { reused: false }) => {
+      if (!current || addMutation.isPending) return;
+      addMutation.mutate({ prompt: current, answer });
+    },
+    [current, addMutation],
+  );
 
   const cancel = useCallback(() => {
     if (!current) return;
@@ -141,9 +204,10 @@ export function useUnknownTagPrompt() {
     () => ({
       prompt: current,
       isPending: addMutation.isPending,
+      reusedTagSupported,
       confirm,
       cancel,
     }),
-    [current, addMutation.isPending, confirm, cancel],
+    [current, addMutation.isPending, reusedTagSupported, confirm, cancel],
   );
 }

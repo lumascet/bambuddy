@@ -53,7 +53,7 @@ export function SpoolmanSettings() {
       setLocalSyncMode(settings.spoolman_sync_mode || 'auto');
       setLocalDisableWeightSync(settings.spoolman_disable_weight_sync === 'true');
       setLocalReportPartialUsage(settings.spoolman_report_partial_usage !== 'false');
-      setLocalAutoAddUnknownRfid(settings.auto_add_unknown_rfid !== 'false');
+      setLocalAutoAddUnknownRfid(settings.auto_add_unknown_rfid === 'true');
       setIsInitialized(true);
     }
   }, [settings]);
@@ -69,7 +69,7 @@ export function SpoolmanSettings() {
       (settings.spoolman_sync_mode || 'auto') !== localSyncMode ||
       (settings.spoolman_disable_weight_sync === 'true') !== localDisableWeightSync ||
       (settings.spoolman_report_partial_usage !== 'false') !== localReportPartialUsage ||
-      (settings.auto_add_unknown_rfid !== 'false') !== localAutoAddUnknownRfid;
+      (settings.auto_add_unknown_rfid === 'true') !== localAutoAddUnknownRfid;
 
     if (hasChanges) {
       const timeoutId = setTimeout(() => {

@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { X, Loader2, Save, Beaker, Palette, Zap, Tag, Link2, Unlink } from 'lucide-react';
+import { X, Loader2, Save, Beaker, Palette, Zap, Tag, Tags, Link2, Unlink } from 'lucide-react';
 import { api, ApiError } from '../api/client';
 import type { InventorySpool, SlicerSetting, SpoolCatalogEntry, LocalPreset, BuiltinFilament, SpoolmanBulkCreateResult, SpoolFilamentPresetInput, SpoolKProfileInput, SpoolmanFilamentEntry, ResolvedProfileDefault } from '../api/client';
 import { Button } from './Button';
@@ -864,6 +864,23 @@ export function SpoolFormModal({
     },
   });
 
+  // Reused tag: the linked tag came off another spool, so Bambuddy ignores the
+  // filament data it reports and keeps this spool's own. Local inventory only.
+  const reusedTagMutation = useMutation({
+    mutationFn: (reused: boolean) => api.updateSpool(spool!.id, { reused_tag: reused }),
+    onSuccess: async () => {
+      await refreshSpoolQueries();
+    },
+    onError: () => {
+      showToast(t('inventory.saveFailed'), 'error');
+    },
+  });
+  // The spool prop is a snapshot taken when the modal opened; the toggle's
+  // own result is the newer value.
+  const reusedTag = reusedTagMutation.data?.id === spool?.id
+    ? !!reusedTagMutation.data?.reused_tag
+    : !!spool?.reused_tag;
+
   // Fetch assignment for this spool (to show Unassign button). In Spoolman mode
   // the slot assignment lives in the spoolman_slot_assignments table keyed by
   // spoolman_spool_id, not in the legacy spool_assignments table — #1336 was the
@@ -1455,6 +1472,22 @@ export function SpoolFormModal({
                 <Tag className="w-4 h-4" />
                 {t('inventory.clearRfid', 'Clear RFID Tag')}
               </Button>
+              {!spoolmanMode && (spool?.tag_uid || spool?.tray_uuid) && (
+                <Button
+                  variant="secondary"
+                  onClick={() => reusedTagMutation.mutate(!reusedTag)}
+                  disabled={isPending || reusedTagMutation.isPending}
+                  title={t('inventory.reusedTagHint')}
+                  aria-pressed={reusedTag}
+                  // On: a green inset ring, so the state reads at a glance
+                  // and not only from the label. Ring classes, because the
+                  // secondary variant already sets bg and text colours.
+                  className={reusedTag ? 'ring-1 ring-inset ring-bambu-green' : ''}
+                >
+                  <Tags className={`w-4 h-4 ${reusedTag ? 'text-bambu-green' : ''}`} />
+                  {reusedTag ? t('inventory.unmarkReusedTag') : t('inventory.markReusedTag')}
+                </Button>
+              )}
               {spoolAssignment ? (
                 <Button
                   variant="secondary"

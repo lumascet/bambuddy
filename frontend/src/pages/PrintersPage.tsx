@@ -186,6 +186,7 @@ import { AMSHistoryModal } from '../components/AMSHistoryModal';
 import { AmsBackupModal } from '../components/AmsBackupModal';
 import { HeaterHistoryModal } from '../components/HeaterHistoryModal';
 import type { HeaterSensorKind } from '../api/client';
+import { ReusedTagMarker } from '../components/ReusedTagMarker';
 import { FilamentHoverCard, EmptySlotHoverCard } from '../components/FilamentHoverCard';
 import { AssignSpoolModal } from '../components/AssignSpoolModal';
 import { ConfigureAmsSlotModal } from '../components/ConfigureAmsSlotModal';
@@ -5645,7 +5646,11 @@ function PrinterCard({
                                   // the hover card shows "Devil Design PLA Basic" rather than the
                                   // vendor-less form. Strip the "@<printer>..." suffix that
                                   // BambuStudio appends to user-preset names.
-                                  profile: slotPresetName || (slotSpoolForFill ? [slotSpoolForFill.brand, slotSpoolForFill.slicer_filament_name?.split('@')[0].trim() || slotSpoolForFill.material].filter(Boolean).join(' ').trim() : null) || inventoryAssignment?.spool?.slicer_filament_name || cloudInfo?.name || tray.tray_sub_brands || tray.tray_type,
+                                  // A reused tag's preset and sub-brand name the spool it came off:
+                                  // label the slot with the assigned spool's own preset or name.
+                                  profile: (!spoolmanEnabled && inventoryAssignment?.spool?.reused_tag
+                                    ? (inventoryAssignment.spool.slicer_filament_name?.split('@')[0].trim() || [inventoryAssignment.spool.brand, inventoryAssignment.spool.material, inventoryAssignment.spool.subtype].filter(Boolean).join(' '))
+                                    : null) || slotPresetName || (slotSpoolForFill ? [slotSpoolForFill.brand, slotSpoolForFill.slicer_filament_name?.split('@')[0].trim() || slotSpoolForFill.material].filter(Boolean).join(' ').trim() : null) || inventoryAssignment?.spool?.slicer_filament_name || cloudInfo?.name || tray.tray_sub_brands || tray.tray_type,
                                   colorName: getColorName(tray.tray_color || '', tray.tray_sub_brands, tray.tray_info_idx),
                                   colorHex: tray.tray_color || null,
                                   kFactor: formatKValue(tray.k),
@@ -5674,6 +5679,9 @@ function PrinterCard({
                                     )
                                   : null;
                                 // Slot visual content (goes inside hover card)
+                                // A reused RFID tag reports the filament of the spool it came
+                                // off; the slot shows the assigned spool's real filament instead.
+                                const reusedTagSpool = !spoolmanEnabled && inventoryAssignment?.spool?.reused_tag ? inventoryAssignment.spool : null;
                                 const slotVisual = (
                                   <div
                                     className={`relative w-full bg-bambu-dark-secondary rounded-lg p-1 text-center ${isEmpty && !pending ? 'opacity-50' : ''} ${
@@ -5705,16 +5713,17 @@ function PrinterCard({
                                       </span>
                                     )}
                                     {/* Filament color circle with 1-based slot number centered inside */}
+                                    {reusedTagSpool && !isExpectedSlot && <ReusedTagMarker />}
                                     <FilamentSlotCircle
-                                      trayColor={tray?.tray_color}
-                                      trayType={tray?.tray_type}
+                                      trayColor={reusedTagSpool?.rgba ?? tray?.tray_color}
+                                      trayType={reusedTagSpool?.material ?? tray?.tray_type}
                                       isEmpty={isEmpty}
                                       emptyKind={emptyKind}
                                       pendingColor={pending?.colorHex}
                                       slotNumber={slotIdx + 1}
                                     />
                                     <div className="text-[length:var(--pc-t9,9px)] text-white font-bold truncate">
-                                      {tray?.tray_type || pending?.material || t(emptyKind === 'reset' ? 'ams.slotUnconfigured' : 'ams.slotEmpty')}
+                                      {reusedTagSpool?.material || tray?.tray_type || pending?.material || t(emptyKind === 'reset' ? 'ams.slotUnconfigured' : 'ams.slotEmpty')}
                                     </div>
                                     <KValueLine k={filamentData ? tray?.k : null} reserve={anySlotHasKValue} />
                                     {/* Fill bar */}
@@ -5815,6 +5824,7 @@ function PrinterCard({
                                               extra_colors: assignment.spool.extra_colors ?? null,
                                               effect_type: assignment.spool.effect_type ?? null,
                                               remainingWeightGrams: Math.max(0, Math.round(assignment.spool.label_weight - assignment.spool.weight_used)),
+                                              reusedTag: !!assignment.spool.reused_tag,
                                             } : null,
                                             onAssignSpool: () => setAssignSpoolModal({
                                               printerId: printer.id,
@@ -5950,7 +5960,11 @@ function PrinterCard({
                         // Build filament data for hover card
                         const filamentData = tray?.tray_type ? {
                           vendor: (isBambuLabSpool(tray) ? 'Bambu Lab' : 'Generic') as 'Bambu Lab' | 'Generic',
-                          profile: slotPresetName || (htSlotSpoolForFill ? [htSlotSpoolForFill.brand, htSlotSpoolForFill.slicer_filament_name?.split('@')[0].trim() || htSlotSpoolForFill.material].filter(Boolean).join(' ').trim() : null) || htInventoryAssignment?.spool?.slicer_filament_name || cloudInfo?.name || tray.tray_sub_brands || tray.tray_type,
+                          // A reused tag's preset and sub-brand name the spool it came off:
+                          // label the slot with the assigned spool's own preset or name.
+                          profile: (!spoolmanEnabled && htInventoryAssignment?.spool?.reused_tag
+                            ? (htInventoryAssignment.spool.slicer_filament_name?.split('@')[0].trim() || [htInventoryAssignment.spool.brand, htInventoryAssignment.spool.material, htInventoryAssignment.spool.subtype].filter(Boolean).join(' '))
+                            : null) || slotPresetName || (htSlotSpoolForFill ? [htSlotSpoolForFill.brand, htSlotSpoolForFill.slicer_filament_name?.split('@')[0].trim() || htSlotSpoolForFill.material].filter(Boolean).join(' ').trim() : null) || htInventoryAssignment?.spool?.slicer_filament_name || cloudInfo?.name || tray.tray_sub_brands || tray.tray_type,
                           colorName: getColorName(tray.tray_color || '', tray.tray_sub_brands, tray.tray_info_idx),
                           colorHex: tray.tray_color || null,
                           kFactor: formatKValue(tray.k),
@@ -5979,6 +5993,9 @@ function PrinterCard({
                             )
                           : null;
                         // Slot visual content (goes inside hover card)
+                        // A reused RFID tag reports the filament of the spool it came
+                        // off; the slot shows the assigned spool's real filament instead.
+                        const reusedTagSpool = !spoolmanEnabled && htInventoryAssignment?.spool?.reused_tag ? htInventoryAssignment.spool : null;
                         const slotVisual = (
                           <div
                             className={`relative w-full bg-bambu-dark-secondary rounded-lg p-1 text-center ${isEmpty && !pending ? 'opacity-50' : ''} ${
@@ -6010,16 +6027,17 @@ function PrinterCard({
                               </span>
                             )}
                             {/* Filament color circle with 1-based slot number centered inside */}
+                            {reusedTagSpool && !isExpectedSlot && <ReusedTagMarker />}
                             <FilamentSlotCircle
-                              trayColor={tray?.tray_color}
-                              trayType={tray?.tray_type}
+                              trayColor={reusedTagSpool?.rgba ?? tray?.tray_color}
+                              trayType={reusedTagSpool?.material ?? tray?.tray_type}
                               isEmpty={isEmpty}
                               emptyKind={emptyKind}
                               pendingColor={pending?.colorHex}
                               slotNumber={1}
                             />
                             <div className="text-[length:var(--pc-t9,9px)] text-white font-bold truncate">
-                              {tray?.tray_type || pending?.material || t(emptyKind === 'reset' ? 'ams.slotUnconfigured' : 'ams.slotEmpty')}
+                              {reusedTagSpool?.material || tray?.tray_type || pending?.material || t(emptyKind === 'reset' ? 'ams.slotUnconfigured' : 'ams.slotEmpty')}
                             </div>
                             <KValueLine k={filamentData ? tray?.k : null} reserve={anySlotHasKValue} />
                             {/* Fill bar */}
@@ -6232,6 +6250,7 @@ function PrinterCard({
                                           extra_colors: assignment.spool.extra_colors ?? null,
                                           effect_type: assignment.spool.effect_type ?? null,
                                           remainingWeightGrams: Math.max(0, Math.round(assignment.spool.label_weight - assignment.spool.weight_used)),
+                                          reusedTag: !!assignment.spool.reused_tag,
                                         } : null,
                                         onAssignSpool: () => setAssignSpoolModal({
                                           printerId: printer.id,
@@ -6525,6 +6544,7 @@ function PrinterCard({
                                             extra_colors: assignment.spool.extra_colors ?? null,
                                             effect_type: assignment.spool.effect_type ?? null,
                                             remainingWeightGrams: Math.max(0, Math.round(assignment.spool.label_weight - assignment.spool.weight_used)),
+                                            reusedTag: !!assignment.spool.reused_tag,
                                           } : null,
                                           onAssignSpool: () => setAssignSpoolModal({
                                             printerId: printer.id,

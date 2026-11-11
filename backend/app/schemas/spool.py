@@ -141,6 +141,8 @@ class SpoolBase(BaseModel):
     tray_uuid: str | None = None
     data_origin: str | None = None
     tag_type: str | None = None
+    # Linked tag was reused from another spool; ignore its filament data.
+    reused_tag: bool = False
     cost_per_kg: float | None = Field(default=None, ge=0)
     weight_locked: bool = False
     last_scale_weight: int | None = None
@@ -211,6 +213,7 @@ class SpoolUpdate(IgnoresNullForRequiredColumns):
     tray_uuid: str | None = None
     data_origin: str | None = None
     tag_type: str | None = None
+    reused_tag: bool | None = None
     cost_per_kg: float | None = Field(default=None, ge=0)
     weight_locked: bool | None = None
     # Set by hand for a drying done outside an AMS; null clears it (#2863).

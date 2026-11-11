@@ -5796,6 +5796,14 @@ async def _run_migrations(conn):
     # SQLite and Postgres.
     await _safe_execute(conn, "ALTER TABLE spool ADD COLUMN material_number VARCHAR(64)")
 
+    # Migration: Add reused_tag flag to spool -- the linked RFID tag came off
+    # another spool, so the filament data it reports is ignored. Postgres
+    # rejects `DEFAULT 0` for BOOLEAN.
+    if is_sqlite():
+        await _safe_execute(conn, "ALTER TABLE spool ADD COLUMN reused_tag BOOLEAN DEFAULT 0")
+    else:
+        await _safe_execute(conn, "ALTER TABLE spool ADD COLUMN reused_tag BOOLEAN DEFAULT false")
+
     # Migration: repair the tare of spools the RFID auto-add gave the wrong
     # Bambu spool row (#2909). Runs last so the spool catalogue it reads is
     # whatever this database actually holds.
@@ -6221,6 +6229,7 @@ _PG_COLUMNS_SET_FROM_MODEL = (
     ("smart_plugs", "controls_printer_power"),
     ("smart_plugs", "off_delay_after_drying_minutes"),
     ("smart_plugs", "rest_energy_total_multiplier"),
+    ("spool", "reused_tag"),
     ("spool", "weight_used_baseline"),
     ("virtual_printers", "gcode_injection"),
     ("virtual_printers", "queue_force_color_match"),

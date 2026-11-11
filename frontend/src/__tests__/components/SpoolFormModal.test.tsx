@@ -1762,3 +1762,63 @@ describe('SpoolFormModal — per-spool tare in Spoolman mode (#2908)', () => {
     expect(payload).not.toHaveProperty('core_weight');
   });
 });
+
+describe('SpoolFormModal — reused RFID tag toggle', () => {
+  const tagged = (overrides: Partial<InventorySpool>): InventorySpool =>
+    ({
+      ...existingSpool,
+      id: 42,
+      tag_uid: 'A1B2C3D4E5F60718',
+      tray_uuid: 'A1B2C3D4E5F60718293A4B5C6D7E8F90',
+      ...overrides,
+    }) as InventorySpool;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('marks a tagged spool as carrying a reused tag and flips its label', async () => {
+    vi.mocked(api.updateSpool).mockResolvedValueOnce(tagged({ reused_tag: true }));
+    render(<SpoolFormModal isOpen={true} onClose={vi.fn()} spool={tagged({})} mode="edit" currencySymbol="$" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /mark tag as reused/i }));
+
+    await waitFor(() => {
+      expect(api.updateSpool).toHaveBeenCalledWith(42, { reused_tag: true });
+    });
+    expect(await screen.findByRole('button', { name: /tag is reused/i })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('unmarks a spool already flagged', async () => {
+    render(
+      <SpoolFormModal isOpen={true} onClose={vi.fn()} spool={tagged({ reused_tag: true })} mode="edit" currencySymbol="$" />
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /tag is reused/i }));
+
+    await waitFor(() => {
+      expect(api.updateSpool).toHaveBeenCalledWith(42, { reused_tag: false });
+    });
+  });
+
+  it('is not offered for an untagged spool or in Spoolman mode', async () => {
+    const { unmount } = render(
+      <SpoolFormModal
+        isOpen={true}
+        onClose={vi.fn()}
+        spool={tagged({ tag_uid: null, tray_uuid: null })}
+        mode="edit"
+        currencySymbol="$"
+      />
+    );
+    await screen.findByRole('button', { name: /clear rfid tag/i });
+    expect(screen.queryByRole('button', { name: /mark tag as reused/i })).not.toBeInTheDocument();
+    unmount();
+
+    render(
+      <SpoolFormModal isOpen={true} onClose={vi.fn()} spool={tagged({})} mode="edit" currencySymbol="$" spoolmanMode={true} />
+    );
+    await screen.findByRole('button', { name: /clear rfid tag/i });
+    expect(screen.queryByRole('button', { name: /mark tag as reused/i })).not.toBeInTheDocument();
+  });
+});

@@ -738,8 +738,18 @@ async def _broadcast_unknown_tag(
     tray_color: str | None = None,
     tray_sub_brands: str | None = None,
     tray_count: int | None = None,
+    remain: int | None = None,
+    reason: str = "unknown",
+    archived_spool: dict | None = None,
 ) -> None:
-    """Broadcast unknown_tag, deduped so repeated MQTT pushes for the same slot+tag don't spam the UI."""
+    """Broadcast unknown_tag, deduped so repeated MQTT pushes for the same slot+tag don't spam the UI.
+
+    ``reason`` tells the prompt what it is looking at: ``"unknown"``, a tag
+    Bambuddy has never seen (authentic Bambu Lab spool, or a reused tag?), or
+    ``"refilled_archived"``, the tag of an empty archived spool now reporting
+    a much fuller spool -- the tag reused on a new one. ``archived_spool``
+    carries that spool's filament so the prompt can offer it as the default.
+    """
     _logger = logging.getLogger(__name__)
     slot_key = (ams_id, tray_id)
     tag_key = (tag_uid or "", tray_uuid or "")
@@ -777,9 +787,21 @@ async def _broadcast_unknown_tag(
             "tray_color": tray_color,
             "tray_sub_brands": tray_sub_brands,
             "tray_count": tray_count,
+            "remain": remain,
+            "reason": reason,
+            "archived_spool": archived_spool,
         }
     )
     per_printer[slot_key] = tag_key
+
+
+def _tray_remain(tray: dict) -> int | None:
+    """The tray's remain% when the AMS knows it (0-100), else None."""
+    try:
+        remain = int(tray.get("remain"))
+    except (TypeError, ValueError):
+        return None
+    return remain if 0 <= remain <= 100 else None
 
 
 def _clear_unknown_tag_dedup(printer_id: int, ams_id: int, tray_id: int) -> None:
@@ -3337,6 +3359,7 @@ async def on_ams_change(printer_id: int, ams_data: list):
             from backend.app.models.spool import Spool
             from backend.app.models.spool_assignment import SpoolAssignment as SA
             from backend.app.services.spool_tag_matcher import (
+                archived_spool_for_tag,
                 auto_assign_spool,
                 create_spool_from_tray,
                 find_matching_untagged_spool,
@@ -3344,12 +3367,15 @@ async def on_ams_change(printer_id: int, ams_data: list):
                 is_bambu_tag,
                 is_valid_tag,
                 link_tag_to_inventory_spool,
+                looks_refilled,
+                spool_remaining_pct,
                 tag_belongs_to_archived_spool,
             )
 
             _spoolman_on = await get_setting(db, "spoolman_enabled")
-            _auto_add_raw = await get_setting(db, "auto_add_unknown_rfid")
-            _auto_add_unknown = _auto_add_raw is None or _auto_add_raw.lower() == "true"
+            from backend.app.utils.rfid_auto_add import auto_add_unknown_rfid_enabled
+
+            _auto_add_unknown = auto_add_unknown_rfid_enabled(await get_setting(db, "auto_add_unknown_rfid"))
             if not _spoolman_on or _spoolman_on.lower() != "true":
                 for ams_unit in ams_data:
                     if not isinstance(ams_unit, dict):
@@ -3389,6 +3415,9 @@ async def on_ams_change(printer_id: int, ams_data: list):
                                 remain_raw is not None
                                 and existing_assignment.spool
                                 and not existing_assignment.spool.weight_locked
+                                # A reused tag's remain% belongs to the spool the
+                                # tag came off, not to this one.
+                                and not existing_assignment.spool.reused_tag
                             ):
                                 try:
                                     remain_val = int(remain_raw)
@@ -3438,20 +3467,15 @@ async def on_ams_change(printer_id: int, ams_data: list):
                             # here; a material/colour match or a new spool is not
                             # grounds to take it out of other slots (#3427).
                             known_by_tag = spool is not None
-                            if not spool and await tag_belongs_to_archived_spool(db, tag_uid, tray_uuid):
-                                # An archived spool still in the AMS: the slot
-                                # stays free rather than adopting its tag.
-                                continue
-                            if not spool:
-                                # Try matching an untagged inventory spool (same material/color)
-                                spool = await find_matching_untagged_spool(db, tray)
-                                if spool:
-                                    await link_tag_to_inventory_spool(db, spool, tray)
-                                elif _auto_add_unknown:
-                                    spool = await create_spool_from_tray(db, tray)
-                                else:
-                                    # Auto-add disabled: surface the slot so the
-                                    # user can add it manually via the UI.
+                            archived = None if spool else await archived_spool_for_tag(db, tag_uid, tray_uuid)
+                            if archived is not None:
+                                # An archived spool's tag in the AMS. Still the
+                                # used-up spool (an empty core waiting to be
+                                # swapped): the slot stays free rather than
+                                # adopting its tag. Much fuller than it was when
+                                # archived: the tag is on a new spool now, so ask
+                                # what that spool is (re-add and remap).
+                                if looks_refilled(archived, tray):
                                     await _broadcast_unknown_tag(
                                         printer_id=printer_id,
                                         ams_id=ams_id,
@@ -3462,6 +3486,48 @@ async def on_ams_change(printer_id: int, ams_data: list):
                                         tray_color=tray.get("tray_color"),
                                         tray_sub_brands=tray.get("tray_sub_brands"),
                                         tray_count=len(ams_unit.get("tray", [])),
+                                        remain=_tray_remain(tray),
+                                        reason="refilled_archived",
+                                        archived_spool={
+                                            "id": archived.id,
+                                            "material": archived.material,
+                                            "subtype": archived.subtype,
+                                            "brand": archived.brand,
+                                            "color_name": archived.color_name,
+                                            "rgba": archived.rgba,
+                                            "label_weight": archived.label_weight,
+                                            "core_weight": archived.core_weight,
+                                            "remaining_pct": round(spool_remaining_pct(archived)),
+                                            "reused_tag": bool(archived.reused_tag),
+                                        },
+                                    )
+                                continue
+                            if not spool:
+                                if _auto_add_unknown:
+                                    # Opted in: match an untagged inventory spool
+                                    # (same material/colour), else add the tag's
+                                    # filament as a new spool.
+                                    spool = await find_matching_untagged_spool(db, tray)
+                                    if spool:
+                                        await link_tag_to_inventory_spool(db, spool, tray)
+                                    else:
+                                        spool = await create_spool_from_tray(db, tray)
+                                else:
+                                    # Default: nothing is added or linked on the
+                                    # tag's word. The prompt asks whether this is
+                                    # an authentic Bambu Lab spool or a reused tag
+                                    # on other filament, and what that filament is.
+                                    await _broadcast_unknown_tag(
+                                        printer_id=printer_id,
+                                        ams_id=ams_id,
+                                        tray_id=tray_id,
+                                        tag_uid=tag_uid,
+                                        tray_uuid=tray_uuid,
+                                        tray_type=tray.get("tray_type"),
+                                        tray_color=tray.get("tray_color"),
+                                        tray_sub_brands=tray.get("tray_sub_brands"),
+                                        tray_count=len(ams_unit.get("tray", [])),
+                                        remain=_tray_remain(tray),
                                     )
                                     continue
                             # Slot matched (existing tag, untagged inventory
@@ -3542,8 +3608,9 @@ async def on_ams_change(printer_id: int, ams_data: list):
             if sync_mode and sync_mode != "auto":
                 return  # Only sync on auto mode
 
-            _auto_add_raw_sm = await get_setting(db, "auto_add_unknown_rfid")
-            auto_add_unknown_rfid = _auto_add_raw_sm is None or _auto_add_raw_sm.lower() == "true"
+            from backend.app.utils.rfid_auto_add import auto_add_unknown_rfid_enabled
+
+            auto_add_unknown_rfid = auto_add_unknown_rfid_enabled(await get_setting(db, "auto_add_unknown_rfid"))
 
             # `spoolman_disable_weight_sync` is deprecated (#1119) — weight is now
             # always owned by per-print tracking, never by AMS auto-sync. The

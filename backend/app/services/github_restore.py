@@ -1982,6 +1982,7 @@ class GitHubRestoreService:
                 "core_weight": entry.get("core_weight") or 250,
                 "weight_used": entry.get("weight_used") or 0,
                 "weight_locked": bool(entry.get("weight_locked")),
+                "reused_tag": bool(entry.get("reused_tag")),
                 "slicer_filament": entry.get("slicer_filament"),
                 "slicer_filament_name": entry.get("slicer_filament_name"),
                 "nozzle_temp_min": entry.get("nozzle_temp_min"),

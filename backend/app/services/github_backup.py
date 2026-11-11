@@ -803,6 +803,7 @@ class GitHubBackupService:
                 # The "Reset Total Consumed" point (WU-7).
                 "weight_used_baseline": s.weight_used_baseline,
                 "weight_locked": s.weight_locked,
+                "reused_tag": s.reused_tag,
                 "slicer_filament": s.slicer_filament,
                 "slicer_filament_name": s.slicer_filament_name,
                 "nozzle_temp_min": s.nozzle_temp_min,

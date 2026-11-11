@@ -50,6 +50,7 @@ from backend.app.utils.filament_ids import (
     normalize_slicer_filament,
 )
 from backend.app.utils.filament_types import nozzle_temp_range, printer_filament_type
+from backend.app.utils.rfid_auto_add import auto_add_unknown_rfid_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -307,8 +308,7 @@ async def sync_printer_ams(
 
     from backend.app.api.routes.settings import get_setting
 
-    _auto_add_raw = await get_setting(db, "auto_add_unknown_rfid")
-    auto_add_unknown_rfid = _auto_add_raw is None or _auto_add_raw.lower() == "true"
+    auto_add_unknown_rfid = auto_add_unknown_rfid_enabled(await get_setting(db, "auto_add_unknown_rfid"))
 
     # Handle different AMS data structures
     # Traditional AMS: list of {"id": N, "tray": [...]} dicts
@@ -521,8 +521,7 @@ async def sync_all_printers(
 
     from backend.app.api.routes.settings import get_setting
 
-    _auto_add_raw = await get_setting(db, "auto_add_unknown_rfid")
-    auto_add_unknown_rfid = _auto_add_raw is None or _auto_add_raw.lower() == "true"
+    auto_add_unknown_rfid = auto_add_unknown_rfid_enabled(await get_setting(db, "auto_add_unknown_rfid"))
 
     # OPTIMIZATION: Fetch all spools once before processing ALL printers/trays
     # This eliminates redundant API calls across all printers

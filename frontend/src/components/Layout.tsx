@@ -1156,8 +1156,10 @@ export function Layout() {
       />
 
       <UnknownSpoolModal
+        key={unknownSpool.prompt ? `${unknownSpool.prompt.printer_id}|${unknownSpool.prompt.ams_id}|${unknownSpool.prompt.tray_id}` : 'none'}
         prompt={unknownSpool.prompt}
         isPending={unknownSpool.isPending}
+        reusedTagSupported={unknownSpool.reusedTagSupported}
         onConfirm={unknownSpool.confirm}
         onCancel={unknownSpool.cancel}
       />

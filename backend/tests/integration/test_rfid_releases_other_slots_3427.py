@@ -97,11 +97,16 @@ async def test_a_tag_read_on_printer_b_releases_printer_as_slot(test_engine, db_
 
 async def test_a_spool_matched_by_material_is_not_taken_from_its_slot(test_engine, db_session, printer_factory):
     """An unknown tag linked to an untagged spool of the same filament proves
-    nothing about where that spool is: two identical rolls, one in each printer."""
+    nothing about where that spool is: two identical rolls, one in each printer.
+
+    The material match only runs with auto-add switched on; by default an
+    unknown tag raises a prompt instead."""
     from backend.app.main import on_ams_change
+    from backend.app.models.settings import Settings
 
     a_id = (await printer_factory()).id
     b_id = (await printer_factory()).id
+    db_session.add(Settings(key="auto_add_unknown_rfid", value="true"))
     spool = Spool(material="PLA", brand="Bambu Lab", label_weight=1000, weight_used=0, rgba="AFB1AEFF")
     db_session.add(spool)
     await db_session.flush()

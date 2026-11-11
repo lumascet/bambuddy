@@ -50,6 +50,8 @@ interface InventoryConfig {
     extra_colors?: string | null;
     effect_type?: string | null;
     remainingWeightGrams?: number | null;
+    // The spool carries a reused RFID tag: the tag's filament data is not this spool's.
+    reusedTag?: boolean;
   } | null;
   isAssigned?: boolean;
 }
@@ -90,8 +92,12 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
   const cardRef = useRef<HTMLDivElement>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const handleCopyUuid = () => {
-    const uuid = data.trayUuid;
+  // What the AMS read off the slot's tag: the Bambu tray UUID, else the tag UID.
+  const tagId = data.trayUuid || data.tagUid || null;
+  const reusedTag = !!inventory?.assignedSpool?.reusedTag;
+
+  const handleCopyUuid = (value: string | null | undefined = data.trayUuid) => {
+    const uuid = value;
     if (!uuid) return;
 
     // Try modern clipboard API first, fallback to execCommand
@@ -204,7 +210,10 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
     return '#22c55e'; // green
   };
 
-  const colorHex = data.colorHex ? `#${data.colorHex.replace('#', '')}` : null;
+  // A reused tag reports the colour of the spool it came off; the assigned
+  // spool's own colour is the one in the slot.
+  const baseHex = reusedTag && inventory?.assignedSpool?.rgba ? inventory.assignedSpool.rgba : data.colorHex;
+  const colorHex = baseHex ? `#${baseHex.replace('#', '')}` : null;
 
   // An assigned spool outranks any hex lookup: it is the roll the user put in
   // this slot, named by whoever created it, and it is already shown two rows
@@ -341,14 +350,27 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                 </span>
               </div>
 
-              {/* Vendor badge - solid background for visibility on any color */}
-              <div className={`
-                absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider
-                ${data.vendor === 'Bambu Lab'
-                  ? 'bg-black/60 text-white'
-                  : 'bg-black/50 text-white/90'}
-              `}>
-                {data.vendor === 'Bambu Lab' ? 'BBL' : 'GEN'}
+              {/* Vendor badge - solid background for visibility on any color.
+                  A reused tag reads as BBL like any Bambu tag, so a second
+                  badge under it says its filament data belongs to another
+                  spool. Stacked in the corner, clear of the centred name. */}
+              <div className="absolute top-1.5 right-1.5 flex flex-col items-end gap-0.5">
+                <div className={`
+                  px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider
+                  ${data.vendor === 'Bambu Lab'
+                    ? 'bg-black/60 text-white'
+                    : 'bg-black/50 text-white/90'}
+                `}>
+                  {data.vendor === 'Bambu Lab' ? 'BBL' : 'GEN'}
+                </div>
+                {reusedTag && (
+                  <div
+                    className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-amber-400 text-bambu-dark"
+                    title={t('ams.reusedTagMarkerTitle')}
+                  >
+                    {t('ams.reusedTagBadge')}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -403,6 +425,30 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                   )}
                 </div>
               </div>
+
+              {/* RFID tag the AMS read in this slot. Spoolman mode shows the
+                  UUID in its own section below; this covers everyone else,
+                  for whom the tag ID was nowhere on the printer card. */}
+              {!spoolman?.enabled && tagId && (
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] uppercase tracking-wider text-bambu-gray font-medium">
+                    {t('ams.rfidTag')}
+                  </span>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleCopyUuid(tagId);
+                    }}
+                    className="flex items-center gap-1 text-xs text-bambu-gray hover:text-white transition-colors"
+                    title={t('ams.copyRfidTag', { id: tagId })}
+                  >
+                    <span className="font-mono text-[10px] truncate max-w-[110px]">
+                      {tagId.length > 12 ? `${tagId.slice(0, 12)}…` : tagId}
+                    </span>
+                    {copied ? <Check className="w-3 h-3 text-bambu-green" /> : <Copy className="w-3 h-3" />}
+                  </button>
+                </div>
+              )}
 
               {/* Spoolman section - only show if enabled */}
               {spoolman?.enabled && (
